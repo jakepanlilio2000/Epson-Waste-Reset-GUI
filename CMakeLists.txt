@@ -58,6 +58,27 @@ if(WIN32)
     # Bare target name: the libusb::usb-1.0 alias is only on libusb-cmake's
     # main branch, which has no release tag.
     target_link_libraries(ewr_core PRIVATE setupapi winspool urlmon wininet ws2_32 iphlpapi usb-1.0)
+elseif(APPLE)
+    # macOS: build libusb statically via libusb-cmake so that universal
+    # (arm64 + x86_64) and cross-target builds are 100% self-contained
+    # without depending on single-arch Homebrew dylibs.
+    include(FetchContent)
+    set(LIBUSB_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(LIBUSB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(LIBUSB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(LIBUSB_INSTALL_TARGETS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(libusb_cmake
+        GIT_REPOSITORY https://github.com/libusb/libusb-cmake.git
+        GIT_TAG v1.0.29-0
+    )
+    FetchContent_MakeAvailable(libusb_cmake)
+
+    find_package(CURL REQUIRED)
+    find_library(IOKIT_FRAMEWORK IOKit REQUIRED)
+    find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+    find_library(SECURITY_FRAMEWORK Security REQUIRED)
+
+    target_link_libraries(ewr_core PRIVATE usb-1.0 CURL::libcurl ${IOKIT_FRAMEWORK} ${COREFOUNDATION_FRAMEWORK} ${SECURITY_FRAMEWORK} objc)
 else()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(LIBUSB REQUIRED libusb-1.0)

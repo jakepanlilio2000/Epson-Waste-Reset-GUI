@@ -7,6 +7,7 @@ namespace ewr {
         switch (level)
         {
             case log::Level::Trace:   return "trace";
+            case log::Level::Debug:   return "debug";
             case log::Level::Info:    return "info";
             case log::Level::Warning: return "warning";
             case log::Level::Error:   return "error";
