@@ -11,41 +11,36 @@ on:
 permissions:
   contents: write
 
-# Superseded runs of the same branch or tag are pointless; cancel them.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # The update check compares the tag on GitHub against the version compiled
-  # into the binary. If they drift, every user gets an endless "update
-  # available" announcement for a build they already have, so refuse to release.
   verify-version:
     name: Verify tag matches project version
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Compare tag with project(EWR VERSION ...)
-      run: |
-        tag_version="${GITHUB_REF_NAME#v}"
-        project_version="$(sed -n 's/^project(EWR VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+      - name: Compare tag with project(EWR VERSION ...)
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          project_version="$(sed -n 's/^project(EWR VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
 
-        echo "Tag version:     $tag_version"
-        echo "Project version: $project_version"
+          echo "Tag version:     $tag_version"
+          echo "Project version: $project_version"
 
-        if [ -z "$project_version" ]; then
-          echo "::error::Could not read the version from CMakeLists.txt"
-          exit 1
-        fi
+          if [ -z "$project_version" ]; then
+            echo "::error::Could not read the version from CMakeLists.txt"
+            exit 1
+          fi
 
-        # Pre-release tags such as v1.3.0-rc.1 must share the numeric core.
-        if [ "${tag_version%%-*}" != "$project_version" ]; then
-          echo "::error::Tag $GITHUB_REF_NAME does not match project(EWR VERSION $project_version). Bump CMakeLists.txt before tagging."
-          exit 1
-        fi
+          if [ "${tag_version%%-*}" != "$project_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match project(EWR VERSION $project_version). Bump CMakeLists.txt before tagging."
+            exit 1
+          fi
 
   build-and-test:
     name: Build & Test (${{ matrix.os }})
@@ -56,146 +51,224 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Install dependencies (Linux)
-      if: runner.os == 'Linux'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libusb-1.0-0-dev libcurl4-openssl-dev pkg-config
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev libcurl4-openssl-dev pkg-config
 
-    - name: Install dependencies (macOS)
-      if: runner.os == 'macOS'
-      run: brew list libusb >/dev/null 2>&1 || brew install libusb
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew list libusb >/dev/null 2>&1 || brew install libusb
 
-    - name: Configure CMake
-      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DEWR_BUILD_TESTS=ON
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DEWR_BUILD_TESTS=ON
 
-    - name: Build project
-      run: cmake --build build --config Release
+      - name: Build project
+        run: cmake --build build --config Release
 
-    - name: Run CTest
-      run: ctest --test-dir build --output-on-failure -C Release
+      - name: Run CTest
+        run: ctest --test-dir build --output-on-failure -C Release
 
-    - name: Publish test summary
-      if: always()
-      shell: bash
-      run: |
-        echo "## Test summary for ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Runner OS**: ${{ runner.os }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+      - name: Publish test summary
+        if: always()
+        shell: bash
+        run: |
+          echo "## Test summary for ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner OS**: ${{ runner.os }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
 
-  release:
-    name: Publish draft release
+  build-release:
+    name: Package (${{ matrix.target }})
     needs: [verify-version, build-and-test]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ${{ matrix.os }}
-    # Replaces the workflow-level set for this job, so contents: write is
-    # restated. Only the job that ships archives may sign claims about them.
-    permissions:
-      contents: write
-      id-token: write           # OIDC token for the Sigstore signing certificate
-      attestations: write       # persist the attestation
-      artifact-metadata: write  # storage record (actions/attest lists it as required)
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          # Windows
+          - target: win-x64
+            os: windows-latest
+            platform: windows
+            arch: x64
+            cmake_flags: -A x64
+          - target: win-x86
+            os: windows-latest
+            platform: windows
+            arch: x86
+            cmake_flags: -A Win32
+          - target: win-arm64
+            os: windows-latest
+            platform: windows
+            arch: arm64
+            cmake_flags: -A ARM64
+          # macOS
+          - target: macos-arm64
+            os: macos-latest
+            platform: macos
+            arch: arm64
+            cmake_flags: -DCMAKE_OSX_ARCHITECTURES=arm64
+          - target: macos-x64
+            os: macos-13
+            platform: macos
+            arch: x64
+            cmake_flags: -DCMAKE_OSX_ARCHITECTURES=x86_64
+          - target: macos-universal
+            os: macos-latest
+            platform: macos
+            arch: universal
+            cmake_flags: -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          # Linux
+          - target: linux-x64
+            os: ubuntu-latest
+            platform: linux
+            arch: x64
+            cmake_flags: ""
+          - target: linux-x86
+            os: ubuntu-latest
+            platform: linux
+            arch: x86
+            cmake_flags: -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 -DPKG_CONFIG_PATH=/usr/lib/i386-linux-gnu/pkgconfig
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+            cmake_flags: ""
+          - target: linux-arm
+            os: ubuntu-latest
+            platform: linux
+            arch: arm
+            cmake_flags: -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=arm -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ -DPKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Install dependencies (Linux)
-      if: runner.os == 'Linux'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libusb-1.0-0-dev libcurl4-openssl-dev pkg-config
+      # Dependencies: Linux x64
+      - name: Install dependencies (Linux x64)
+        if: matrix.target == 'linux-x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev libcurl4-openssl-dev pkg-config
 
-    - name: Install dependencies (macOS)
-      if: runner.os == 'macOS'
-      run: brew list libusb >/dev/null 2>&1 || brew install libusb
+      # Dependencies: Linux x86 (32-bit i386)
+      - name: Install dependencies (Linux x86)
+        if: matrix.target == 'linux-x86'
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib g++-multilib libusb-1.0-0-dev:i386 libcurl4-openssl-dev:i386 pkg-config
 
-    - name: Configure CMake
-      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DEWR_BUILD_TESTS=OFF
+      # Dependencies: Linux arm64 (Native arm64 runner)
+      - name: Install dependencies (Linux arm64)
+        if: matrix.target == 'linux-arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev libcurl4-openssl-dev pkg-config
 
-    - name: Build project
-      run: cmake --build build --config Release
+      # Dependencies: Linux arm (32-bit ARMv7)
+      - name: Install dependencies (Linux arm)
+        if: matrix.target == 'linux-arm'
+        run: |
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libusb-1.0-0-dev:armhf libcurl4-openssl-dev:armhf pkg-config
 
-    # Releases ship as archives (EWR announces new versions; installing is up
-    # to the user). Names follow the existing EWR-<tag>-<os> convention. The
-    # macOS archive carries the machine type because the hosted runner is
-    # arm64 and the binary is not universal.
-    #
-    # The payload is staged in stage/EWR, not ./EWR: CMake pins the built
-    # binary to the repo root as `ewr`, and macOS filesystems are
-    # case-insensitive, so mkdir EWR there collides with that file.
-    - name: Package release artifacts
-      shell: bash
-      run: |
-        mkdir -p dist stage/EWR
-        case "${{ runner.os }}" in
-          Windows)
-            cp ewr.exe database.json stage/EWR/
-            (cd stage && 7z a "../dist/EWR-${GITHUB_REF_NAME}-win.zip" EWR)
-            ;;
-          macOS)
-            cp ewr database.json stage/EWR/
-            tar -czf "dist/EWR-${GITHUB_REF_NAME}-macos-$(uname -m).tar.gz" -C stage EWR
-            ;;
-          *)
-            cp ewr database.json stage/EWR/
-            tar -czf "dist/EWR-${GITHUB_REF_NAME}-linux.tar.gz" -C stage EWR
-            ;;
-        esac
-        ls -l dist
+      # Dependencies: macOS
+      - name: Install dependencies (macOS)
+        if: matrix.platform == 'macos'
+        run: brew list libusb >/dev/null 2>&1 || brew install libusb
 
-    # The C ABI ships on its own, not beside ewr.exe: a user resetting a
-    # printer needs one self-contained binary and would rightly wonder what a
-    # DLL next to it is for. Embedders take this archive instead - the shared
-    # library, the header they include, and the two contracts they code
-    # against.
-    - name: Package the C API SDK
-      shell: bash
-      run: |
-        mkdir -p stage/EWR-SDK/include/ewr stage/EWR-SDK/lib stage/EWR-SDK/docs
-        cp include/ewr/ewr_c.h stage/EWR-SDK/include/ewr/
-        cp docs/c-api.md docs/json-output.md stage/EWR-SDK/docs/
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DEWR_BUILD_TESTS=OFF ${{ matrix.cmake_flags }}
 
-        case "${{ runner.os }}" in
-          Windows)
-            # The .lib is the import library a C or C++ caller links against;
-            # ctypes and friends need only the DLL.
-            cp build/Release/ewrc.dll build/Release/ewrc.lib stage/EWR-SDK/lib/
-            (cd stage && 7z a "../dist/EWR-SDK-${GITHUB_REF_NAME}-win.zip" EWR-SDK)
-            ;;
-          macOS)
-            # -a keeps the libewrc.dylib -> libewrc.<version>.dylib symlink,
-            # which is what a caller opens.
-            cp -a build/libewrc*.dylib stage/EWR-SDK/lib/
-            tar -czf "dist/EWR-SDK-${GITHUB_REF_NAME}-macos-$(uname -m).tar.gz" -C stage EWR-SDK
-            ;;
-          *)
-            cp -a build/libewrc.so* stage/EWR-SDK/lib/
-            tar -czf "dist/EWR-SDK-${GITHUB_REF_NAME}-linux.tar.gz" -C stage EWR-SDK
-            ;;
-        esac
-        ls -l dist
+      - name: Build project
+        run: cmake --build build --config Release
 
-    # A signed SLSA build-provenance claim per archive, binding its digest to
-    # this commit and run; `gh attestation verify` checks it (README). Before
-    # the upload, so no archive reaches the draft without one. It covers these
-    # exact bytes: a hand re-upload of an archive will not verify.
-    - name: Attest release artifacts
-      uses: actions/attest@v4
-      with:
-        subject-path: 'dist/*'
+      # Packaging
+      - name: Package release artifacts
+        shell: bash
+        run: |
+          mkdir -p dist stage/EWR
+          case "${{ matrix.platform }}" in
+            windows)
+              cp ewr.exe ewr_gui.exe database.json stage/EWR/
+              (cd stage && 7z a "../dist/EWR-${GITHUB_REF_NAME}-${{ matrix.target }}.zip" EWR)
+              ;;
+            macos)
+              cp ewr database.json stage/EWR/
+              tar -czf "dist/EWR-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" -C stage EWR
+              ;;
+            linux)
+              cp ewr database.json stage/EWR/
+              tar -czf "dist/EWR-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" -C stage EWR
+              ;;
+          esac
 
-    - name: Upload artifacts to draft release
-      uses: softprops/action-gh-release@v2
-      with:
-        draft: true
-        files: dist/*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package C API SDK
+        shell: bash
+        run: |
+          mkdir -p stage/EWR-SDK/include/ewr stage/EWR-SDK/lib stage/EWR-SDK/docs
+          cp include/ewr/ewr_c.h stage/EWR-SDK/include/ewr/
+          cp docs/c-api.md docs/json-output.md stage/EWR-SDK/docs/
+
+          case "${{ matrix.platform }}" in
+            windows)
+              cp build/Release/ewrc.dll build/Release/ewrc.lib stage/EWR-SDK/lib/
+              (cd stage && 7z a "../dist/EWR-SDK-${GITHUB_REF_NAME}-${{ matrix.target }}.zip" EWR-SDK)
+              ;;
+            macos)
+              cp -a build/libewrc*.dylib stage/EWR-SDK/lib/
+              tar -czf "dist/EWR-SDK-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" -C stage EWR-SDK
+              ;;
+            linux)
+              cp -a build/libewrc.so* stage/EWR-SDK/lib/
+              tar -czf "dist/EWR-SDK-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" -C stage EWR-SDK
+              ;;
+          esac
+          ls -l dist
+
+      - name: Upload target artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.target }}
+          path: dist/*
+          retention-days: 1
+
+  publish-release:
+    name: Publish draft release
+    needs: [verify-version, build-and-test, build-release]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download all matrix artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-*
+          path: dist
+          merge-multiple: true
+
+      - name: List collected artifacts
+        run: ls -lh dist/
+
+      - name: Attest release artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: 'dist/*'
+
+      - name: Upload artifacts to draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,26 +1,50 @@
-# EWR Specific
+# ==============================================================================
+# EWR (Epson Waste Reset) - .gitignore
+# ==============================================================================
+
+# --- EWR Runtime Diagnostics & Dumps ---
+ewr_trace.log
+*.log
+ewr_dump_*.txt
+dump-console-log*.txt
+*-found-addresses.json
+ewr_eeprom_dump_*
+*.bin
+imgui.ini
+
+# Updater temporary staging files
+*.staged
+database.json.tmp
+
+# Replay captures folder: keep documentation, reference C arrays, and txt notes
 models/*
 !models/*.txt
 !models/*.c
 !models/README.md
-ewr_trace.log
+
+# --- Release & Packaging Archives ---
 dist/
-
-# Updater staging files
-*.staged
-database.json.tmp
-
-__pycache__/
-ewr_dump_*.txt
-dump-console-log*.txt
-
+stage/
 ewr.zip
 EWR-*.zip
 EWR-*.tar.gz
+EWR-*.tar.xz
+*.7z
 
-# CMake Artifacts
-build/
+# --- Build Directories & CMake Artifacts ---
+build*/
+cmake-build-*/
 out/
+bin/
+Release/
+Debug/
+RelWithDebInfo/
+MinSizeRel/
+x64/
+x86/
+ARM64/
+
+# In-source CMake files
 CMakeCache.txt
 CMakeFiles/
 CMakeScripts/
@@ -28,8 +52,38 @@ Makefile
 cmake_install.cmake
 compile_commands.json
 install_manifest.txt
+CTestTestfile.cmake
+Testing/
 
-# Visual Studio / MSVC (Windows)
+# --- Compilers, Binaries & Object Files ---
+# Executables (Windows & Unix binaries without extension)
+*.exe
+/ewr
+/ewr_gui
+/ewr_tests
+/ewr_c_header_check
+
+# Object files & static/dynamic libraries
+*.o
+*.obj
+*.so
+*.so.*
+*.a
+*.lib
+*.dll
+*.dylib
+*.exp
+
+# Debug symbols & intermediate files
+*.pdb
+*.idb
+*.ilk
+*.dSYM/
+*.dmp
+*.crash
+
+# --- IDEs & Developer Tools ---
+# Visual Studio / MSVC
 .vs/
 *.sln
 *.suo
@@ -39,25 +93,23 @@ install_manifest.txt
 *.vcxproj
 *.vcxproj.filters
 *.vcxproj.user
-*.pdb
-*.idb
-*.ilk
-*.obj
-*.lib
-*.exp
 
-# Linux / Arch Builds
-*.o
-*.so
-*.a
-
-# Executables
-*.exe
-/ewr
-/ewr_tests
-Release/
-
-# Editor Settings
+# VS Code / JetBrains / Editors
 .vscode/
 .idea/
 *.swp
+*.swo
+*~
+
+# --- Python & Script Caches (build_db.py) ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# --- Operating System Files ---
+.DS_Store
+._*
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini

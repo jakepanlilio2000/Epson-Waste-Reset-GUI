@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 # C is here for tests/c_header_check.c: the C ABI header has to keep
 # compiling as C, and only a C compiler can say so.
-project(EWR VERSION 1.5.1 LANGUAGES CXX C)
+project(EWR VERSION 1.6.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -81,6 +81,44 @@ set_target_properties(ewr PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_CURRENT_SOURCE_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_CURRENT_SOURCE_DIR}"
 )
+
+option(EWR_BUILD_GUI "Build EWR interactive GUI" ON)
+if(EWR_BUILD_GUI AND WIN32)
+    set(GUI_SOURCES
+        gui/main_gui.cpp
+        gui/app.cpp
+        gui/style.cpp
+        vendor/imgui/imgui.cpp
+        vendor/imgui/imgui_draw.cpp
+        vendor/imgui/imgui_tables.cpp
+        vendor/imgui/imgui_widgets.cpp
+        vendor/imgui/backends/imgui_impl_win32.cpp
+        vendor/imgui/backends/imgui_impl_dx11.cpp
+    )
+
+    add_executable(ewr_gui WIN32 ${GUI_SOURCES})
+    target_include_directories(ewr_gui PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui/backends
+        ${CMAKE_CURRENT_BINARY_DIR}/generated
+        ${CMAKE_CURRENT_SOURCE_DIR}/gui
+    )
+    target_link_libraries(ewr_gui PRIVATE
+        ewr_core
+        d3d11
+        dxgi
+        dwmapi
+    )
+    set_target_properties(ewr_gui PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_CURRENT_SOURCE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
 
 # The C ABI (include/ewr/ewr_c.h) is in ewr_core for anyone linking
 # statically; this builds it as a shared library for the callers that cannot -
