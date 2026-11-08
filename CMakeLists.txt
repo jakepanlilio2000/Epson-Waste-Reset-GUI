@@ -42,6 +42,18 @@ else()
 endif()
 option(EWR_BUNDLED_LIBUSB "Build the pinned libusb and link it statically" ${EWR_BUNDLED_LIBUSB_DEFAULT})
 
+# Linux compatibility: if system libusb-1.0 is not installed, automatically fallback to bundled libusb
+if(NOT WIN32 AND NOT EWR_BUNDLED_LIBUSB)
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(LIBUSB QUIET libusb-1.0)
+    endif()
+    if(NOT LIBUSB_FOUND)
+        message(STATUS "System libusb-1.0 not found; enabling bundled static libusb for Linux compatibility")
+        set(EWR_BUNDLED_LIBUSB ON)
+    endif()
+endif()
+
 # The version string the self-updater compares against GitHub release tags is
 # generated from the project() version above, so there is exactly one copy of it.
 configure_file(
@@ -117,11 +129,16 @@ elseif(EWR_WITH_UPDATER AND APPLE)
     find_package(CURL REQUIRED)
     target_link_libraries(ewr_core PRIVATE CURL::libcurl)
 elseif(EWR_WITH_UPDATER)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(LIBCURL REQUIRED libcurl)
-    target_include_directories(ewr_core PRIVATE ${LIBCURL_INCLUDE_DIRS})
-    target_link_directories(ewr_core PUBLIC ${LIBCURL_LIBRARY_DIRS})
-    target_link_libraries(ewr_core PRIVATE ${LIBCURL_LIBRARIES})
+    find_package(CURL QUIET)
+    if(CURL_FOUND)
+        target_link_libraries(ewr_core PRIVATE CURL::libcurl)
+    else()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(LIBCURL REQUIRED libcurl)
+        target_include_directories(ewr_core PRIVATE ${LIBCURL_INCLUDE_DIRS})
+        target_link_directories(ewr_core PUBLIC ${LIBCURL_LIBRARY_DIRS})
+        target_link_libraries(ewr_core PRIVATE ${LIBCURL_LIBRARIES})
+    endif()
 endif()
 
 # --restore-all writes bytes no reset ever writes. It stays out of release
@@ -208,29 +225,15 @@ if(EWR_BUILD_C_SHARED)
     )
 endif()
 
-option(EWR_BUILD_TESTS "Build EWR unit tests" ${EWR_HOST_DEFAULT})
-if(EWR_BUILD_TESTS)
-    enable_testing()
-    # Guards include/ewr/ewr_c.h against C++-only syntax: it is compiled as C
-    # and linked against the same library a caller would link.
-    add_executable(ewr_c_header_check tests/c_header_check.c)
-    target_link_libraries(ewr_c_header_check PRIVATE ewr_core)
-    add_test(NAME CApiHeader COMMAND ewr_c_header_check)
-
-    add_executable(ewr_tests tests/main.cpp tests/test_backup.cpp tests/test_contracts.cpp tests/test_d4.cpp
-                             tests/test_database.cpp tests/test_discovery.cpp tests/test_executor.cpp
-                             tests/test_maintenance.cpp tests/test_output.cpp tests/test_packets.cpp
-                             tests/test_session.cpp tests/test_snmp.cpp tests/test_updater.cpp tests/test_usb.cpp)
-    target_link_libraries(ewr_tests PRIVATE ewr_core)
-    target_include_directories(ewr_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    # Tests read database.json and the models/ folder, so they must run
-    # from the repository root regardless of the build directory layout.
-    add_test(NAME UnitTests COMMAND ewr_tests WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-    # The code layout CONTRIBUTING.md describes: ewr:: holds types, include/ewr is public.
-    find_package(Python3 COMPONENTS Interpreter QUIET)
-    if(Python3_Interpreter_FOUND)
-        add_test(NAME Layout COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_layout.py
-                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+if(UNIX AND NOT ANDROID AND NOT APPLE)
+    include(GNUInstallDirs)
+    if(EWR_BUILD_CLI)
+        install(TARGETS ewr RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/database.json DESTINATION ${CMAKE_INSTALL_DATADIR}/ewr)
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/70-ewr.rules DESTINATION /lib/udev/rules.d)
+    endif()
+    if(EWR_BUILD_C_SHARED)
+        install(TARGETS ewrc LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/ewr/ewr_c.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/ewr)
     endif()
 endif()

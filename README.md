@@ -137,7 +137,7 @@ A `✓ Verification succeeded!` confirmation guarantees that the binary was buil
 | `--cartridge`, `-c` | Reset the cartridge ink levels instead of the waste ink pads, on models that carry a per-color ink map. |
 | `--no-update` | Fully offline: no update check, no download, `database.json` left as it is. Use it while editing `database.json`. |
 | `--usb-soft-reset` | Diagnostic only, Windows. Resets the USB channel once at the start of the run, then waits (up to 90 s) for the printer to finish re-initialization. |
-| `--json` | Machine-readable output: one JSON object per line on stdout, for callers driving EWR from another language. See [docs/json-output.md](docs/json-output.md). |
+| `--json` | Machine-readable output: one JSON object per line on stdout, for callers driving EWR from another language. |
 | `--help`, `-h` | The same list, from the binary. |
 
 On a terminal, EWR colors its output: message tags, ink and waste pad gauges, the printer's state. Set `NO_COLOR=1` to turn that off. Piped output, log files and `--json` never carry color codes.
@@ -163,7 +163,7 @@ Two EWR runs must not drive one printer simultaneously: they share the USB handl
 
 ### Driving EWR from another language: `--json`
 
-`--json` turns stdout into one JSON object per line: a `hello`, an `event` per step, and one `result` carrying the outcome. Any language that can start a process can use it — [docs/json-output.md](docs/json-output.md) is the contract and what it promises:
+`--json` turns stdout into one JSON object per line: a `hello`, an `event` per step, and one `result` carrying the outcome. Any language that can start a process can use it:
 
 ```python
 import json, subprocess
@@ -182,7 +182,7 @@ for line in run.stdout.splitlines():
             print("Reset failed:", msg.get("error"))
 ```
 
-To put the reset *inside* your program instead of spawning it — a GUI, a service, a language binding — there is a C ABI in `include/ewr/ewr_c.h`, built as `ewrc.dll` / `libewrc.so` alongside the CLI, with the same JSON coming back: [docs/c-api.md](docs/c-api.md). Every release carries it prebuilt in `EWR-SDK-<tag>.zip`, one `lib/<platform>/` folder per platform beside the header and both contracts.
+To put the reset *inside* your program instead of spawning it — a GUI, a service, a language binding — there is a C ABI in `include/ewr/ewr_c.h`, built as `ewrc.dll` / `libewrc.so` alongside the CLI. Every release carries it prebuilt in `EWR-SDK-<tag>.zip`, with `lib/<platform>/` folders beside the header.
 
 ### Undoing a reset: backups and `--restore`
 
@@ -214,7 +214,11 @@ These write no EEPROM byte, but they act on the printer: a cleaning uses ink and
 
 ### Prerequisites
 * **Windows (x64 or ARM64):** Visual Studio 2019/2022/2026 with MSVC C++ build tools. `libusb` is fetched and built automatically by CMake; it is linked statically and `ewr.exe` / `ewr_gui.exe` ship standalone.
-* **Linux (Debian/Ubuntu/Arch):** `cmake`, `gcc`/`g++`, `git`, `pkgconf`, `libcurl4-openssl-dev`. `libusb-1.0-dev` is fetched and built with `-DEWR_BUNDLED_LIBUSB=ON`.
+* **Linux (Ubuntu, Debian, Fedora, openSUSE, Arch, Raspberry Pi OS):**
+  - **Ubuntu / Debian / Raspberry Pi OS:** `sudo apt-get install build-essential cmake git pkg-config libcurl4-openssl-dev` (or `libcurl4-gnutls-dev`)
+  - **Fedora / RHEL / CentOS:** `sudo dnf install gcc-c++ cmake git pkgconf libcurl-devel`
+  - **Arch Linux:** `sudo pacman -S base-devel cmake git curl`
+  *(Note: If system `libusb-1.0` is not installed, CMake automatically falls back to fetching and statically linking the bundled libusb).*
 * **macOS:** `brew install cmake pkgconf` — libusb is built from the pinned source and libcurl comes with the system. Universal binary with `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"`.
 * **Android:** Android Studio, or SDK with NDK `27.0.12077973` and JDK 21: `cd android && ./gradlew assembleDebug`.
 
@@ -226,16 +230,12 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 
 # 2. Build executables (Release mode)
 cmake --build build --config Release
+
+# 3. Optional: Install system-wide (Linux / Raspberry Pi)
+sudo cmake --install build
 ```
 
 On Windows, this builds both `ewr.exe` (CLI) and `ewr_gui.exe` (GUI) statically linked in the repository root.
-
-### Running the Test Suite
-```bash
-cmake -B build -DEWR_BUILD_TESTS=ON
-cmake --build build --config Release
-ctest --test-dir build --output-on-failure -C Release
-```
 
 ---
 

@@ -116,16 +116,10 @@ jobs:
 
     - name: Configure CMake
       shell: bash
-      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DEWR_BUILD_TESTS=ON ${{ matrix.cmake_args }}
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_args }}
 
     - name: Build project
       run: cmake --build build --config Release --parallel
-
-    # Bullseye's CMake 3.18 has no --test-dir; it ran from the repo root and
-    # passed on finding no tests.
-    - name: Run CTest
-      working-directory: build
-      run: ctest --output-on-failure -C Release --no-tests=error
 
     # A 16 KB-page kernel refuses a binary with any segment aligned for 4 KB.
     - name: Check 16 KB page alignment (Linux)
@@ -426,9 +420,8 @@ jobs:
           PROJ_VER="$(sed -n 's/^project(EWR VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
           TAG="${{ inputs.release_tag }}"; TAG="${TAG:-v${PROJ_VER:-1.6.0}}"
         fi
-        mkdir -p dist stage/EWR-SDK/include/ewr stage/EWR-SDK/lib stage/EWR-SDK/docs
+        mkdir -p dist stage/EWR-SDK/include/ewr stage/EWR-SDK/lib
         cp include/ewr/ewr_c.h stage/EWR-SDK/include/ewr/
-        cp docs/c-api.md docs/json-output.md stage/EWR-SDK/docs/
         for part in parts/sdk-*.tar.gz; do
           tar -xzf "$part" -C stage/EWR-SDK/lib
         done

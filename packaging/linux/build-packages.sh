@@ -53,7 +53,7 @@ Maintainer: EWR <https://github.com/RxNaison/Epson-Waste-Reset>
 Homepage: https://github.com/RxNaison/Epson-Waste-Reset
 Section: utils
 Priority: optional
-Depends: libc6 (>= 2.31), libstdc++6, libcurl4
+Depends: libc6 (>= 2.31), libstdc++6, libcurl4 | libcurl4t64 | libcurl3-gnutls
 Description: $summary
  $description
 EOF
