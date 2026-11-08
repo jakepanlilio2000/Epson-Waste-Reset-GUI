@@ -23,277 +23,384 @@ permissions:
   attestations: write
   artifact-metadata: write
 
+# Superseded runs of the same branch or tag are pointless; cancel them.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # The update check compares the tag on GitHub against the version compiled
+  # into the binary. If they drift, every user gets an endless "update
+  # available" announcement for a build they already have, so refuse to release.
   verify-version:
     name: Verify tag matches project version
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Compare tag with project(EWR VERSION ...)
-        run: |
-          tag_version="${GITHUB_REF_NAME#v}"
-          project_version="$(sed -n 's/^project(EWR VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+    - name: Compare tag with project(EWR VERSION ...)
+      run: |
+        tag_version="${GITHUB_REF_NAME#v}"
+        project_version="$(sed -n 's/^project(EWR VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
 
-          echo "Tag version:     $tag_version"
-          echo "Project version: $project_version"
+        echo "Tag version:     $tag_version"
+        echo "Project version: $project_version"
 
-          if [ -z "$project_version" ]; then
-            echo "::error::Could not read the version from CMakeLists.txt"
-            exit 1
-          fi
+        if [ -z "$project_version" ]; then
+          echo "::error::Could not read the version from CMakeLists.txt"
+          exit 1
+        fi
 
-          if [ "${tag_version%%-*}" != "$project_version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match project(EWR VERSION $project_version). Bump CMakeLists.txt before tagging."
-            exit 1
-          fi
+        # Pre-release tags such as v1.3.0-rc.1 must share the numeric core.
+        if [ "${tag_version%%-*}" != "$project_version" ]; then
+          echo "::error::Tag $GITHUB_REF_NAME does not match project(EWR VERSION $project_version). Bump CMakeLists.txt before tagging."
+          exit 1
+        fi
 
+  # Every desktop target EWR ships, built and tested the way its release is.
+  # Linux builds in Debian bullseye (glibc 2.31), so one archive runs on
+  # Raspberry Pi OS bullseye, Ubuntu 20.04 and everything newer; libusb is the
+  # pinned one, static, everywhere. armhf is cross-compiled, and its tests run
+  # under qemu-user.
   build-and-test:
-    name: Build & Test (${{ matrix.os }})
+    name: Build & Test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libusb-1.0-0-dev libcurl4-openssl-dev pkg-config
-
-      - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DEWR_BUILD_TESTS=ON
-
-      - name: Build project
-        run: cmake --build build --config Release
-
-      - name: Run CTest
-        run: ctest --test-dir build --output-on-failure -C Release
-
-      - name: Publish test summary
-        if: always()
-        shell: bash
-        run: |
-          echo "## Test summary for ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner OS**: ${{ runner.os }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-
-  build-release:
-    name: Package (${{ matrix.target }})
-    needs: [build-and-test]
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Windows
-          - target: win-x64
+          - name: linux-x86_64
+            os: ubuntu-latest
+            container: debian:bullseye
+            cmake_args: -DEWR_BUNDLED_LIBUSB=ON
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            container: debian:bullseye
+            cmake_args: -DEWR_BUNDLED_LIBUSB=ON
+          - name: linux-armhf
+            os: ubuntu-latest
+            container: debian:bullseye
+            cross: armhf
+            cmake_args: -DEWR_BUNDLED_LIBUSB=ON -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/linux-armhf.cmake
+          - name: windows-x64
             os: windows-latest
-            platform: windows
-            arch: x64
-            cmake_flags: -A x64
-          - target: win-x86
-            os: windows-latest
-            platform: windows
-            arch: x86
-            cmake_flags: -A Win32
-          - target: win-arm64
-            os: windows-latest
-            platform: windows
-            arch: arm64
-            cmake_flags: -A ARM64
-          # macOS
-          - target: macos-arm64
+          - name: windows-arm64
+            os: windows-11-arm
+          - name: macos-universal
             os: macos-latest
-            platform: macos
-            arch: arm64
-            cmake_flags: -DCMAKE_OSX_ARCHITECTURES=arm64
-          - target: macos-x64
-            os: macos-latest
-            platform: macos
-            arch: x64
-            cmake_flags: -DCMAKE_OSX_ARCHITECTURES=x86_64
-          - target: macos-universal
-            os: macos-latest
-            platform: macos
-            arch: universal
-            cmake_flags: -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
-          # Linux
-          - target: linux-x64
-            os: ubuntu-latest
-            platform: linux
-            arch: x64
-            cmake_flags: ""
-          - target: linux-x86
-            os: ubuntu-latest
-            platform: linux
-            arch: x86
-            cmake_flags: -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32
-          - target: linux-arm64
-            os: ubuntu-latest
-            platform: linux
-            arch: arm64
-            cmake_flags: -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
-          - target: linux-arm
-            os: ubuntu-latest
-            platform: linux
-            arch: arm
-            cmake_flags: -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=arm -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++
+            cmake_args: '"-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"'
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Install dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        # Bullseye's LTS ended in Aug 2026 and its packages moved to archive.debian.org.
+        rm -f /etc/apt/sources.list.d/*
+        echo 'deb http://archive.debian.org/debian bullseye main' > /etc/apt/sources.list
+        echo 'deb http://archive.debian.org/debian-security bullseye-security main' >> /etc/apt/sources.list
+        apt-get update
+        apt-get install -y --no-install-recommends build-essential cmake git pkg-config file ca-certificates \
+          libcurl4-openssl-dev
+        if [ "${{ matrix.cross }}" = "armhf" ]; then
+          dpkg --add-architecture armhf
+          apt-get update
+          apt-get install -y --no-install-recommends crossbuild-essential-armhf libcurl4-openssl-dev:armhf \
+            qemu-user-static
+        fi
 
-      # Determine release tag name
-      - name: Resolve release tag
-        id: vars
-        shell: bash
-        run: |
-          TAG="${{ inputs.release_tag || github.ref_name }}"
-          if [[ "$TAG" != v* ]]; then
-            PROJ_VER="$(sed -n 's/^project(EWR VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
-            TAG="v${PROJ_VER:-1.6.0}"
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Configure CMake
+      shell: bash
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DEWR_BUILD_TESTS=ON ${{ matrix.cmake_args }}
+
+    - name: Build project
+      run: cmake --build build --config Release --parallel
+
+    # Bullseye's CMake 3.18 has no --test-dir; it ran from the repo root and
+    # passed on finding no tests.
+    - name: Run CTest
+      working-directory: build
+      run: ctest --output-on-failure -C Release --no-tests=error
+
+    # A 16 KB-page kernel refuses a binary with any segment aligned for 4 KB.
+    - name: Check 16 KB page alignment (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        for f in ewr build/libewrc.so; do
+          aligns="$(readelf -lW "$f" | awk '$1 == "LOAD" { print $NF }' | sort -u)"
+          echo "$f: $aligns"
+          if [ "$aligns" != "0x4000" ]; then
+            echo "::error::$f has LOAD segments aligned to $aligns, not 0x4000"
+            exit 1
           fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "Using release tag: $TAG"
+        done
 
-      # Dependencies: Linux x64
-      - name: Install dependencies (Linux x64)
-        if: matrix.target == 'linux-x64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libusb-1.0-0-dev libcurl4-openssl-dev pkg-config
+    - name: Check the universal binary (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        lipo -info ewr
+        lipo -info ewr | grep -q "x86_64" || { echo "::error::ewr missing x86_64 slice"; exit 1; }
+        lipo -info ewr | grep -q "arm64" || { echo "::error::ewr missing arm64 slice"; exit 1; }
 
-      # Dependencies: Linux x86 (32-bit i386)
-      - name: Install dependencies (Linux x86)
-        if: matrix.target == 'linux-x86'
-        run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y gcc-multilib g++-multilib libusb-1.0-0-dev:i386 libcurl4-openssl-dev:i386 pkg-config
+  # The Android app: assembleDebug and unit tests under Gradle. Release builds
+  # (APK signed and published with a tag) are in release-android below.
+  android:
+    name: Build & Test (Android)
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      # Dependencies: Linux arm64 (aarch64) - configure Ubuntu ports mirror
-      - name: Install dependencies (Linux arm64)
-        if: matrix.target == 'linux-arm64'
-        run: |
-          sudo sed -i 's/^Architectures:.*/Architectures: amd64 i386/' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
-          if ! grep -q "Architectures:" /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null; then
-            sudo sed -i '/^URIs:/i Architectures: amd64 i386' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
-          fi
-          sudo tee /etc/apt/sources.list.d/ports.sources > /dev/null << 'EOF'
-          Types: deb
-          URIs: http://ports.ubuntu.com/ubuntu-ports/
-          Suites: noble noble-updates noble-backports noble-security
-          Components: main restricted universe multiverse
-          Architectures: arm64 armhf
-          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-          EOF
-          sudo dpkg --add-architecture arm64
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libusb-1.0-0-dev:arm64 libcurl4-openssl-dev:arm64 pkg-config
+    - name: Set up JDK 21
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 21
 
-      # Dependencies: Linux arm (32-bit ARMv7) - configure Ubuntu ports mirror
-      - name: Install dependencies (Linux arm)
-        if: matrix.target == 'linux-arm'
-        run: |
-          sudo sed -i 's/^Architectures:.*/Architectures: amd64 i386/' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
-          if ! grep -q "Architectures:" /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null; then
-            sudo sed -i '/^URIs:/i Architectures: amd64 i386' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
-          fi
-          sudo tee /etc/apt/sources.list.d/ports.sources > /dev/null << 'EOF'
-          Types: deb
-          URIs: http://ports.ubuntu.com/ubuntu-ports/
-          Suites: noble noble-updates noble-backports noble-security
-          Components: main restricted universe multiverse
-          Architectures: arm64 armhf
-          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-          EOF
-          sudo dpkg --add-architecture armhf
-          sudo apt-get update
-          sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libusb-1.0-0-dev:armhf libcurl4-openssl-dev:armhf pkg-config
+    - name: Install the NDK
+      run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null
 
-      - name: Configure CMake
-        shell: bash
-        run: |
-          if [ "${{ matrix.target }}" = "linux-x86" ]; then
-            export PKG_CONFIG_LIBDIR=/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig
-          elif [ "${{ matrix.target }}" = "linux-arm64" ]; then
-            export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
-          elif [ "${{ matrix.target }}" = "linux-arm" ]; then
-            export PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
-          fi
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DEWR_BUILD_TESTS=OFF ${{ matrix.cmake_flags }}
+    - name: Build debug APK and run tests
+      working-directory: android
+      run: ./gradlew testDebugUnitTest assembleDebug --console=plain
 
-      - name: Build project
-        run: cmake --build build --config Release
+  # Linux release packages: .deb and .rpm, built in Debian bullseye so the
+  # dependencies resolve on everything from Ubuntu 20.04 forward. They install
+  # /usr/bin/ewr, database.json and the udev rule that lets members of plugdev
+  # / users talk to Epson USB printers without sudo.
+  packages:
+    name: Linux Packages (${{ matrix.deb_arch }})
+    runs-on: ubuntu-latest
+    container: debian:bullseye
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: amd64
+            rpm_arch: x86_64
+            cmake_args: -DEWR_BUNDLED_LIBUSB=ON
+          - deb_arch: arm64
+            rpm_arch: aarch64
+            cmake_args: -DEWR_BUNDLED_LIBUSB=ON
+          - deb_arch: armhf
+            rpm_arch: armv7hl
+            cross: armhf
+            cmake_args: -DEWR_BUNDLED_LIBUSB=ON -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/linux-armhf.cmake
 
-      # Packaging
-      - name: Package release artifacts
-        shell: bash
-        run: |
-          TAG="${{ steps.vars.outputs.tag }}"
-          mkdir -p dist stage/EWR
-          case "${{ matrix.platform }}" in
-            windows)
-              cp ewr.exe ewr_gui.exe database.json stage/EWR/
-              (cd stage && 7z a "../dist/EWR-${TAG}-${{ matrix.target }}.zip" EWR)
-              ;;
-            macos)
-              cp ewr database.json stage/EWR/
-              tar -czf "dist/EWR-${TAG}-${{ matrix.target }}.tar.gz" -C stage EWR
-              ;;
-            linux)
-              cp ewr database.json stage/EWR/
-              tar -czf "dist/EWR-${TAG}-${{ matrix.target }}.tar.gz" -C stage EWR
-              ;;
-          esac
+    steps:
+    - name: Install dependencies
+      run: |
+        rm -f /etc/apt/sources.list.d/*
+        echo 'deb http://archive.debian.org/debian bullseye main' > /etc/apt/sources.list
+        echo 'deb http://archive.debian.org/debian-security bullseye-security main' >> /etc/apt/sources.list
+        apt-get update
+        apt-get install -y --no-install-recommends build-essential cmake git pkg-config file ca-certificates \
+          libcurl4-openssl-dev dpkg-dev rpm
+        if [ "${{ matrix.cross }}" = "armhf" ]; then
+          dpkg --add-architecture armhf
+          apt-get update
+          apt-get install -y --no-install-recommends crossbuild-essential-armhf libcurl4-openssl-dev:armhf
+        fi
 
-      - name: Package C API SDK
-        shell: bash
-        run: |
-          TAG="${{ steps.vars.outputs.tag }}"
-          mkdir -p stage/EWR-SDK/include/ewr stage/EWR-SDK/lib stage/EWR-SDK/docs
-          cp include/ewr/ewr_c.h stage/EWR-SDK/include/ewr/
-          cp docs/c-api.md docs/json-output.md stage/EWR-SDK/docs/
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-          case "${{ matrix.platform }}" in
-            windows)
-              cp build/Release/ewrc.dll build/Release/ewrc.lib stage/EWR-SDK/lib/
-              (cd stage && 7z a "../dist/EWR-SDK-${TAG}-${{ matrix.target }}.zip" EWR-SDK)
-              ;;
-            macos)
-              cp -a build/libewrc*.dylib stage/EWR-SDK/lib/
-              tar -czf "dist/EWR-SDK-${TAG}-${{ matrix.target }}.tar.gz" -C stage EWR-SDK
-              ;;
-            linux)
-              cp -a build/libewrc.so* stage/EWR-SDK/lib/
-              tar -czf "dist/EWR-SDK-${TAG}-${{ matrix.target }}.tar.gz" -C stage EWR-SDK
-              ;;
-          esac
-          ls -l dist
+    - name: Configure CMake
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DEWR_BUILD_TESTS=OFF ${{ matrix.cmake_args }}
 
-      - name: Upload target artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: artifacts-${{ matrix.target }}
-          path: dist/*
-          retention-days: 1
+    - name: Build ewr
+      run: cmake --build build --config Release --parallel --target ewr
 
-  publish-release:
-    name: Publish draft release
-    needs: [build-release]
+    - name: Build packages
+      run: |
+        version="$(sed -n 's/^project(EWR VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+        bash packaging/linux/build-packages.sh "$version" "${{ matrix.deb_arch }}" "${{ matrix.rpm_arch }}" dist
+
+    - name: Stash packages for the release job
+      uses: actions/upload-artifact@v4
+      with:
+        name: packages-${{ matrix.deb_arch }}
+        path: dist/*
+        retention-days: 1
+
+  # Each release archive is built clean, matching the target configuration:
+  # - Linux x86_64, aarch64 and armhf: Debian bullseye, static pinned libusb
+  # - Windows x64 and ARM64: MSVC, static runtime, static pinned libusb, ewr + ewr_gui
+  # - macOS: universal binary (Apple Silicon + Intel), static pinned libusb
+  release:
+    name: Package (${{ matrix.name }})
+    needs: [build-and-test, packages]
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish_draft != false)
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            sdk: linux-x86_64
+            os: ubuntu-latest
+            container: debian:bullseye
+            cmake_args: -DEWR_BUNDLED_LIBUSB=ON
+            deb_arch: amd64
+            rpm_arch: x86_64
+          - name: linux-aarch64
+            sdk: linux-aarch64
+            os: ubuntu-24.04-arm
+            container: debian:bullseye
+            cmake_args: -DEWR_BUNDLED_LIBUSB=ON
+            deb_arch: arm64
+            rpm_arch: aarch64
+          - name: linux-armhf
+            sdk: linux-armhf
+            os: ubuntu-latest
+            container: debian:bullseye
+            cross: armhf
+            cmake_args: -DEWR_BUNDLED_LIBUSB=ON -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/linux-armhf.cmake
+            deb_arch: armhf
+            rpm_arch: armv7hl
+          - name: win
+            sdk: windows-x64
+            os: windows-latest
+          - name: win-arm64
+            sdk: windows-arm64
+            os: windows-11-arm
+          - name: macos-universal
+            sdk: macos-universal
+            os: macos-latest
+            cmake_args: '"-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"'
+
+    steps:
+    - name: Install dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        rm -f /etc/apt/sources.list.d/*
+        echo 'deb http://archive.debian.org/debian bullseye main' > /etc/apt/sources.list
+        echo 'deb http://archive.debian.org/debian-security bullseye-security main' >> /etc/apt/sources.list
+        apt-get update
+        apt-get install -y --no-install-recommends build-essential cmake git pkg-config file ca-certificates \
+          libcurl4-openssl-dev dpkg-dev rpm
+        if [ "${{ matrix.cross }}" = "armhf" ]; then
+          dpkg --add-architecture armhf
+          apt-get update
+          apt-get install -y --no-install-recommends crossbuild-essential-armhf libcurl4-openssl-dev:armhf
+        fi
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Configure CMake
+      shell: bash
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DEWR_BUILD_TESTS=OFF ${{ matrix.cmake_args }}
+
+    - name: Build project
+      run: cmake --build build --config Release --parallel
+
+    # Releases ship as archives (EWR announces new versions; installing is up
+    # to the user). Names follow the existing EWR-<tag>-<target> convention.
+    #
+    # The payload is staged in stage/EWR, not ./EWR: CMake pins the built
+    # binary to the repo root as `ewr`, and macOS filesystems are
+    # case-insensitive, so mkdir EWR there collides with that file.
+    - name: Package release artifacts
+      shell: bash
+      run: |
+        TAG="${GITHUB_REF_NAME}"
+        if [[ "$TAG" != v* ]]; then
+          PROJ_VER="$(sed -n 's/^project(EWR VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          TAG="${{ inputs.release_tag }}"; TAG="${TAG:-v${PROJ_VER:-1.6.0}}"
+        fi
+        mkdir -p dist stage/EWR
+        case "${{ runner.os }}" in
+          Windows)
+            cp ewr.exe database.json stage/EWR/
+            if [ -f ewr_gui.exe ]; then cp ewr_gui.exe stage/EWR/; fi
+            (cd stage && 7z a "../dist/EWR-${TAG}-${{ matrix.name }}.zip" EWR)
+            ;;
+          *)
+            cp ewr database.json stage/EWR/
+            tar -czf "dist/EWR-${TAG}-${{ matrix.name }}.tar.gz" -C stage EWR
+            ;;
+        esac
+        ls -l dist
+
+    # The C ABI ships on its own, not beside ewr.exe: a user resetting a
+    # printer needs one self-contained binary and would rightly wonder what a
+    # DLL next to it is for. It ships as ONE archive for every platform
+    # (release-sdk, below): the few who embed EWR pick a folder, and the
+    # release page stays short for the many who only want the program. This
+    # leg hands its library on, outside dist/ so it is not published alone.
+    - name: Stage the C API library for the SDK
+      shell: bash
+      run: |
+        mkdir -p "sdk/${{ matrix.sdk }}"
+        case "${{ runner.os }}" in
+          Windows)
+            # The .lib is the import library a C or C++ caller links against;
+            # ctypes and friends need only the DLL.
+            cp build/Release/ewrc.dll build/Release/ewrc.lib "sdk/${{ matrix.sdk }}/"
+            ;;
+          macOS)
+            # -a keeps the libewrc.dylib -> libewrc.<version>.dylib symlink,
+            # which is what a caller opens.
+            cp -a build/libewrc*.dylib "sdk/${{ matrix.sdk }}/"
+            ;;
+          *)
+            cp -a build/libewrc.so* "sdk/${{ matrix.sdk }}/"
+            ;;
+        esac
+        # A tarball, because an artifact upload would turn those symlinks
+        # into copies.
+        tar -czf "sdk-${{ matrix.sdk }}.tar.gz" -C sdk "${{ matrix.sdk }}"
+
+    - name: Hand the library to the SDK job
+      uses: actions/upload-artifact@v4
+      with:
+        name: sdk-${{ matrix.sdk }}
+        path: sdk-${{ matrix.sdk }}.tar.gz
+        retention-days: 1
+
+    - name: Build .deb and .rpm packages (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        version="$(sed -n 's/^project(EWR VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+        bash packaging/linux/build-packages.sh "$version" "${{ matrix.deb_arch }}" "${{ matrix.rpm_arch }}" dist
+
+    # A signed SLSA build-provenance claim per archive, binding its digest to
+    # this commit and run; `gh attestation verify` checks it (README). Before
+    # the upload, so no archive reaches the draft without one. It covers these
+    # exact bytes: a hand re-upload of an archive will not verify.
+    - name: Attest release artifacts
+      uses: actions/attest@v4
+      with:
+        subject-path: 'dist/*'
+
+    - name: Upload artifacts to draft release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag || 'v1.6.0' }}
+        name: "EWR ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag || 'v1.6.0' }}"
+        draft: true
+        files: dist/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # EWR-SDK-<tag>.zip: the header, the two contracts, and lib/<platform>/ for
+  # every platform the release legs built. Runs only when all of them passed,
+  # so it never ships with a platform missing.
+  release-sdk:
+    name: Publish draft release (SDK)
+    needs: [release]
     if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish_draft != false)
     runs-on: ubuntu-latest
     permissions:
@@ -302,41 +409,128 @@ jobs:
       attestations: write
       artifact-metadata: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Resolve release tag
-        id: vars
-        shell: bash
-        run: |
-          TAG="${{ inputs.release_tag || github.ref_name }}"
-          if [[ "$TAG" != v* ]]; then
-            PROJ_VER="$(sed -n 's/^project(EWR VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
-            TAG="v${PROJ_VER:-1.6.0}"
-          fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+    - name: Collect every platform's library
+      uses: actions/download-artifact@v4
+      with:
+        pattern: sdk-*
+        merge-multiple: true
+        path: parts
 
-      - name: Download all matrix artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: artifacts-*
-          path: dist
-          merge-multiple: true
+    - name: Package the C API SDK
+      run: |
+        TAG="${GITHUB_REF_NAME}"
+        if [[ "$TAG" != v* ]]; then
+          PROJ_VER="$(sed -n 's/^project(EWR VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          TAG="${{ inputs.release_tag }}"; TAG="${TAG:-v${PROJ_VER:-1.6.0}}"
+        fi
+        mkdir -p dist stage/EWR-SDK/include/ewr stage/EWR-SDK/lib stage/EWR-SDK/docs
+        cp include/ewr/ewr_c.h stage/EWR-SDK/include/ewr/
+        cp docs/c-api.md docs/json-output.md stage/EWR-SDK/docs/
+        for part in parts/sdk-*.tar.gz; do
+          tar -xzf "$part" -C stage/EWR-SDK/lib
+        done
+        ls -l stage/EWR-SDK/lib/*
+        if [ "$(ls stage/EWR-SDK/lib | wc -l)" -ne 6 ]; then
+          echo "::error::Expected 6 platforms in the SDK, found: $(ls stage/EWR-SDK/lib | tr '\n' ' ')"
+          exit 1
+        fi
+        # -y stores the .so/.dylib symlinks as links, not as copies.
+        (cd stage && zip -r -y "../dist/EWR-SDK-${TAG}.zip" EWR-SDK)
+        unzip -l "dist/EWR-SDK-${TAG}.zip"
 
-      - name: List collected artifacts
-        run: ls -lh dist/
+    - name: Attest the SDK
+      uses: actions/attest@v4
+      with:
+        subject-path: 'dist/*'
 
-      - name: Attest release artifacts
-        uses: actions/attest@v4
-        with:
-          subject-path: 'dist/*'
+    - name: Upload the SDK to the draft release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag || 'v1.6.0' }}
+        name: "EWR ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag || 'v1.6.0' }}"
+        draft: true
+        files: dist/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload artifacts to draft release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.vars.outputs.tag }}
-          name: "EWR ${{ steps.vars.outputs.tag }}"
-          draft: true
-          files: dist/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # The APK is signed with the project's key, held in the `release`
+  # environment's secrets: EWR_KEYSTORE_BASE64, EWR_KEYSTORE_PASSWORD,
+  # EWR_KEY_ALIAS and EWR_KEY_PASSWORD. Not repository secrets: anyone with
+  # write access could read those from a workflow on their own branch, while
+  # the environment admits only v* tags, and only after a maintainer approves
+  # the run. Without the secrets there is no APK to publish - an unsigned one
+  # cannot be installed - and the job says so instead of failing the release.
+  release-android:
+    name: Publish draft release (android)
+    needs: [android]
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish_draft != false)
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 21
+
+    - name: Install the NDK
+      run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null
+
+    - name: Restore the signing key
+      id: key
+      env:
+        KEYSTORE_BASE64: ${{ secrets.EWR_KEYSTORE_BASE64 }}
+      run: |
+        if [ -z "$KEYSTORE_BASE64" ]; then
+          echo "::warning::No EWR_KEYSTORE_BASE64 secret: the APK is not published with this release."
+          echo "present=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/ewr.keystore"
+          echo "present=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Build the signed APK
+      if: steps.key.outputs.present == 'true'
+      working-directory: android
+      env:
+        EWR_KEYSTORE: ${{ runner.temp }}/ewr.keystore
+        EWR_KEYSTORE_PASSWORD: ${{ secrets.EWR_KEYSTORE_PASSWORD }}
+        EWR_KEY_ALIAS: ${{ secrets.EWR_KEY_ALIAS }}
+        EWR_KEY_PASSWORD: ${{ secrets.EWR_KEY_PASSWORD }}
+      run: |
+        TAG="${GITHUB_REF_NAME}"
+        if [[ "$TAG" != v* ]]; then
+          PROJ_VER="$(sed -n 's/^project(EWR VERSION \([0-9.]*\).*/\1/p' ../CMakeLists.txt)"
+          TAG="${{ inputs.release_tag }}"; TAG="${TAG:-v${PROJ_VER:-1.6.0}}"
+        fi
+        ./gradlew assembleRelease --console=plain
+        mkdir -p ../dist
+        cp app/build/outputs/apk/release/*.apk "../dist/EWR-${TAG}-android.apk"
+
+    - name: Attest the APK
+      if: steps.key.outputs.present == 'true'
+      uses: actions/attest@v4
+      with:
+        subject-path: 'dist/*'
+
+    - name: Upload the APK to the draft release
+      if: steps.key.outputs.present == 'true'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag || 'v1.6.0' }}
+        name: "EWR ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag || 'v1.6.0' }}"
+        draft: true
+        files: dist/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

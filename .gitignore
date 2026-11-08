@@ -25,6 +25,7 @@ models/*
 # --- Release & Packaging Archives ---
 dist/
 stage/
+backups/
 ewr.zip
 EWR-*.zip
 EWR-*.tar.gz

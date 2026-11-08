@@ -1016,7 +1016,7 @@ void App::ActionUpdateDatabase()
         logs_.push_back(startLog);
     }
 
-    auto res = ewr::Updater::UpdateDatabaseNow(databasePath_);
+    auto res = ewr::update::UpdateDatabaseNow(databasePath_);
     std::string msg;
     if (res == ewr::DatabaseUpdate::Updated)
     {
